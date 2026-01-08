@@ -2,6 +2,10 @@ provider "aws" {
   region = "us-east-1"
 }
 
+##########################################################
+# VPC and networking (unchanged)
+##########################################################
+
 resource "aws_vpc" "cojocloud_vpc" {
   cidr_block = "10.0.0.0/16"
 
@@ -49,6 +53,10 @@ resource "aws_route_table_association" "cojocloud_association" {
   route_table_id = aws_route_table.cojocloud_route_table.id
 }
 
+##########################################################
+# Security groups (unchanged)
+##########################################################
+
 resource "aws_security_group" "cojocloud_cluster_sg" {
   vpc_id = aws_vpc.cojocloud_vpc.id
 
@@ -86,6 +94,10 @@ resource "aws_security_group" "cojocloud_node_sg" {
   }
 }
 
+##########################################################
+# EKS Cluster
+##########################################################
+
 resource "aws_eks_cluster" "cojocloud" {
   name     = "cojocloud-cluster"
   role_arn = aws_iam_role.cojocloud_cluster_role.arn
@@ -96,15 +108,9 @@ resource "aws_eks_cluster" "cojocloud" {
   }
 }
 
-
-resource "aws_eks_addon" "ebs_csi_driver" {
-  cluster_name = aws_eks_cluster.cojocloud.name
-  addon_name   = "aws-ebs-csi-driver"
-
-  resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "OVERWRITE"
-}
-
+##########################################################
+# Node Group
+##########################################################
 
 resource "aws_eks_node_group" "cojocloud" {
   cluster_name    = aws_eks_cluster.cojocloud.name
@@ -126,6 +132,11 @@ resource "aws_eks_node_group" "cojocloud" {
   }
 }
 
+##########################################################
+# IAM Roles
+##########################################################
+
+# Cluster role
 resource "aws_iam_role" "cojocloud_cluster_role" {
   name = "cojocloud-cluster-role"
 
@@ -150,6 +161,7 @@ resource "aws_iam_role_policy_attachment" "cojocloud_cluster_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
+# Node group role
 resource "aws_iam_role" "cojocloud_node_group_role" {
   name = "cojocloud-node-group-role"
 
@@ -187,4 +199,68 @@ resource "aws_iam_role_policy_attachment" "cojocloud_node_group_registry_policy"
 resource "aws_iam_role_policy_attachment" "cojocloud_node_group_ebs_policy" {
   role       = aws_iam_role.cojocloud_node_group_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+##########################################################
+#  IRSA setup for EBS CSI addon
+##########################################################
+
+data "aws_eks_cluster" "cojocloud_data" {
+  name = aws_eks_cluster.cojocloud.name
+}
+
+data "aws_eks_cluster_auth" "cojocloud_data" {
+  name = aws_eks_cluster.cojocloud.name
+}
+
+resource "aws_iam_openid_connect_provider" "cojocloud" {
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da0afd38a84"]
+  url             = data.aws_eks_cluster.cojocloud_data.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_role" "ebs_csi_sa_role" {
+  name = "cojocloud-ebs-csi-addon-role"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "${aws_iam_openid_connect_provider.cojocloud.arn}"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "${replace(aws_iam_openid_connect_provider.cojocloud.url, "https://", "")}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+        }
+      }
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_sa_role_policy" {
+  role       = aws_iam_role.ebs_csi_sa_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+##########################################################
+#  EKS Addon using IRSA
+##########################################################
+
+resource "aws_eks_addon" "ebs_csi_driver" {
+  cluster_name             = aws_eks_cluster.cojocloud.name
+  addon_name               = "aws-ebs-csi-driver"
+  service_account_role_arn = aws_iam_role.ebs_csi_sa_role.arn
+
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [
+    aws_iam_role_policy_attachment.ebs_csi_sa_role_policy
+  ]
 }

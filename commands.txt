@@ -1,0 +1,184 @@
+# Install AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+sudo apt install unzip
+unzip awscliv2.zip
+sudo ./aws/install
+aws configure
+-------------------------------------------------------------------------------------
+#Install Terraform
+sudo apt-get update
+sudo apt-get install -y unzip curl
+
+curl -LO https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip
+unzip terraform_1.6.6_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+
+terraform -version
+
+
+--------------------------------------------------------------------------------------------
+Install Jenkins
+
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee \
+  /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+  https://pkg.jenkins.io/debian-stable binary/ | sudo tee \
+  /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+sudo apt update
+sudo apt install jenkins -y
+sudo systemctl start jenkins
+sudo systemctl enable jenkins
+sudo systemctl status jenkins
+
+
+-------------------------------------------------------------------------------------------
+# Kubeconfig
+aws eks --region ap-south-1 update-kubeconfig --name devopsshack-cluster
+---------------------------------------------------------------------------------
+
+#
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+ 
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+kubectl version --client
+
+#chmod +x kubectl
+#mkdir -p ~/.local/bin
+#mv ./kubectl ~/.local/bin/kubectl
+# and then append (or prepend) ~/.local/bin to $PATH
+------------------------------------------------------------------------------------------
+curl -sLO "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz"
+
+tar -xzf eksctl_$(uname -s)_amd64.tar.gz
+
+sudo mv eksctl /usr/local/bin
+
+eksctl version
+
+-------------------------------------------------------------------------------------------	
+#Install HELM
+sudo apt update && sudo apt upgrade -y
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+wget https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
+tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
+sudo mv linux-amd64/helm /usr/local/bin/helm
+helm version
+===============================================================================================
+
+
+eksctl utils associate-iam-oidc-provider --region ap-south-1 --cluster devopsshack-cluster --approve
+
+-----------------------------------------------------------------------------------------------
+eksctl create iamserviceaccount \
+  --region ap-south-1 \
+  --name ebs-csi-controller-sa \
+  --namespace kube-system \
+  --cluster devopsshack-cluster \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --approve \
+  --override-existing-serviceaccounts
+
+-------------------------------------------------------------------------------------------------------------------------
+kubectl apply -k "github.com/kubernetes-sigs/aws-ebs-csi-driver/deploy/kubernetes/overlays/stable/ecr/?ref=release-1.11"
+
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
+---------------------------------------------------------------------------------------------------------------------------
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 
+
+helm repo update
+
+==================================================
+Install docker
+==================================================
+
+
+# Add Docker's official GPG key:
+sudo apt update
+sudo apt install ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add the repository to Apt sources:
+sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt update
+
+sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+
+===================================================================================================
+Trivy installation
+===================================================================================================
+
+sudo apt-get install wget gnupg
+wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+sudo apt-get update
+sudo apt-get install -y trivy
+
+
+
+
+---
+alertmanager:
+  enabled: false
+prometheus:
+  prometheusSpec:
+    service:
+      type: LoadBalancer
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ebs-sc
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+grafana:
+  enabled: true
+  service:
+    type: LoadBalancer
+  adminUser: admin
+  adminPassword: admin123
+nodeExporter:
+  service:
+    type: LoadBalancer
+kubeStateMetrics:
+  enabled: true
+  service:
+    type: LoadBalancer
+additionalScrapeConfigs:
+  - job_name: node-exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100
+  - job_name: kube-state-metrics
+    static_configs:
+      - targets:
+          - kube-state-metrics:8080
+
+
+
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -f values.yaml -n monitoring --create-namespace
+
+kubectl patch svc monitoring-kube-prometheus-prometheus -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
+kubectl patch svc monitoring-kube-state-metrics -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
+kubectl patch svc monitoring-prometheus-node-exporter -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
+
+
+
